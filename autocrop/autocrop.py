@@ -5,6 +5,9 @@ import numpy as np
 import os
 import sys
 from PIL import Image
+from urllib.parse import urlparse
+import requests
+
 
 from .constants import (
     MINFACE,
@@ -85,6 +88,18 @@ def open_file(input_filename):
     with Image.open(input_filename) as img_orig:
         return np.array(img_orig)
 
+def open_url(input_url):
+    """Given a url, returns a numpy array"""
+    with Image.open(requests.get(input_url, stream=True, timeout=60).raw) as img_orig:
+        return np.array(img_orig)
+
+def is_url(url):
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc])
+    except ValueError:
+        return False
+
 
 class Cropper:
     """
@@ -129,6 +144,7 @@ class Cropper:
         self.aspect_ratio = width / height
         self.gamma = fix_gamma
         self.resize = resize
+        self.shouldFlipBGRToRGB = False
 
         # Face percent
         if face_percent > 100 or face_percent < 1:
@@ -140,26 +156,29 @@ class Cropper:
         directory = os.path.dirname(sys.modules["autocrop"].__file__)
         self.casc_path = os.path.join(directory, CASCFILE)
 
-    def crop(self, path_or_array):
+    def crop(self, url_path_or_array):
         """
-        Given a file path or np.ndarray image with a face,
+        Given a url, file path, or np.ndarray image with a face,
         returns cropped np.ndarray around the largest detected
         face.
 
         Parameters
         ----------
-        - `path_or_array` : {`str`, `np.ndarray`}
-            * The filepath or numpy array of the image.
+        - `url_path_or_array` : {`str`, `str`, `np.ndarray`}
+            * The url, filepath, or numpy array of the image.
 
         Returns
         -------
         - `image` : {`np.ndarray`, `None`}
             * A cropped numpy array if face detected, else None.
         """
-        if isinstance(path_or_array, str):
-            image = open_file(path_or_array)
+        if isinstance(url_path_or_array, str):
+            if is_url(url_path_or_array):
+                image = open_url(url_path_or_array)
+            else:
+                image = open_file(url_path_or_array)
         else:
-            image = path_or_array
+            image = url_path_or_array
 
         # Some grayscale color profiles can throw errors, catch them
         try:
@@ -170,6 +189,7 @@ class Cropper:
         # Scale the image
         try:
             img_height, img_width = image.shape[:2]
+
         except AttributeError:
             raise ImageReadError
         minface = int(np.sqrt(img_height**2 + img_width**2) / MINFACE)
@@ -212,8 +232,14 @@ class Cropper:
         # Underexposition fix
         if self.gamma:
             image = check_underexposed(image, gray)
-        return bgr_to_rbg(image)
 
+        # Flip BGR to RGB
+        if self.shouldFlipBGRToRGB:
+            image = bgr_to_rbg(image)
+
+        return image
+
+            
     def _determine_safe_zoom(self, imgh, imgw, x, y, w, h):
         """
         Determines the safest zoom level with which to add margins
